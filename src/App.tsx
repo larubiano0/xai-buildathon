@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { sfx, setMuted } from './sound';
+import { sfx, setMuted, startAmbience, stopAmbience, heartbeat, thunder } from './sound';
 import { LINES, ROOMS, askGhost, pick, quip } from './ghost';
 
-const TOTAL = 180;
+const TOTAL = 300;
+const STARS = ['☉', '☽', '★', '♄', '♃', '♀'];
+const STAR_NAMES = ['Sun', 'Moon', 'Star', 'Saturn', 'Jupiter', 'Venus'];
+const STAR_ANSWER = [1, 2, 3]; // Moon, Star, Saturn
+const RUNES = ['💀', '🔥', '🌙', '👁️', '🕸️'];
+const SEQ = [0, 1, 2, 3, 4].map(i => [3, 0, 4, 1, 2][i]); // 👁️ 💀 🕸️ 🔥 🌙
 type Phase = 'title' | 'play' | 'win' | 'lose';
 type Potion = 'red' | 'blue' | 'green';
 const DEV = new URLSearchParams(location.search).has('dev');
 const fmt = (s: number) => { const c = Math.max(0, Math.ceil(s)); return `${Math.floor(c / 60)}:${String(c % 60).padStart(2, '0')}`; };
-const rank = (left: number) => left > 120 ? 'Poltergeist Speedrunner 👑' : left > 80 ? 'Certified Ghostbuster 🔦' : left > 40 ? 'Moderately Haunted Mortal 🕯️' : left > 10 ? 'Lucky Little Pumpkin 🎃' : 'Escaped By A Fingernail 💀';
+const rank = (left: number) => left > 200 ? 'Poltergeist Speedrunner 👑' : left > 140 ? 'Certified Ghostbuster 🔦' : left > 70 ? 'Moderately Haunted Mortal 🕯️' : left > 10 ? 'Lucky Little Pumpkin 🎃' : 'Escaped By A Fingernail 💀';
 
 function Ghost({ mood }: { mood: string }) {
   return (<svg viewBox="0 0 100 120" className={`ghost-svg ${mood}`} aria-hidden>
@@ -20,6 +25,13 @@ function Ghost({ mood }: { mood: string }) {
 }
 const Candle = ({ x, y }: { x: string; y: string }) => <div className="candle" style={{ left: x, top: y }}><div className="flame" /><div className="wax" /></div>;
 const Cobweb = ({ right }: { right?: boolean }) => <svg className={`cobweb ${right ? 'r' : ''}`} viewBox="0 0 100 100" aria-hidden><g stroke="#ffffff30" fill="none">{[20, 40, 60, 80].map(r => <path key={r} d={`M${r} 0Q${r * .7} ${r * .7} 0 ${r}`} />)}<path d="M0 0L100 100M0 0L50 100M0 0L100 50" /></g></svg>;
+
+function Typewriter({ text }: { text: string }) {
+  const [n, setN] = useState(0);
+  useEffect(() => { setN(0); const id = window.setInterval(() => setN(v => { if (v >= text.length) { clearInterval(id); return v; } return v + 1; }), 18); return () => clearInterval(id); }, [text]);
+  return <>{text.slice(0, n)}<span className="caret">{n < text.length ? '▌' : ''}</span></>;
+}
+const OBJECTIVES = ['Find the cabinet combination', 'Brew the recipe in the right order', 'Choose the door of the living', 'Align the three star dials', 'Repeat the candle ritual, then answer the riddle'];
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>('title');
@@ -49,6 +61,22 @@ export default function App() {
   const [fade, setFade] = useState(false);
   const [endTime, setEndTime] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [dials, setDials] = useState([0, 0, 0]);
+  const [domeOpen, setDomeOpen] = useState(false);
+  const [lit, setLit] = useState<number | null>(null);
+  const [showing, setShowing] = useState(false);
+  const [runeIn, setRuneIn] = useState<number[]>([]);
+  const [runesOk, setRunesOk] = useState(false);
+  const [riddle, setRiddle] = useState('');
+  const pausedAt = useRef(0);
+  const [crt, setCrt] = useState(true);
+  const [bolt, setBolt] = useState(false);
+  const [card, setCard] = useState(false);
+  const [pickup, setPickup] = useState(false);
+  const [shake, setShake] = useState(false);
+  const appRef = useRef<HTMLDivElement>(null);
+  const inventory = [room >= 1 ? '🗝️' : null, room >= 2 ? '🧪' : null, room >= 3 ? '🕯️' : null, room >= 4 ? '🔭' : null, phase === 'win' ? '🌕' : null];
   const timeouts = useRef<number[]>([]);
   const later = (fn: () => void, ms: number) => { timeouts.current.push(window.setTimeout(fn, ms)); };
   useEffect(() => () => timeouts.current.forEach(clearTimeout), []);
@@ -57,7 +85,7 @@ export default function App() {
 
   // deadline-based timer
   useEffect(() => {
-    if (phase !== 'play') return;
+    if (phase !== 'play' || paused) return;
     const id = window.setInterval(() => {
       const l = (deadline.current - performance.now()) / 1000;
       setLeft(Math.max(0, l));
@@ -66,7 +94,7 @@ export default function App() {
       if (l <= 0) { setPhase('lose'); setChatOpen(false); setPanel(null); say(LINES.lose, 'shock'); sfx('lose'); }
     }, 100);
     return () => clearInterval(id);
-  }, [phase, say]);
+  }, [phase, paused, say]);
 
   // random quips
   useEffect(() => {
@@ -75,11 +103,42 @@ export default function App() {
     return () => clearInterval(id);
   }, [phase, say]);
 
+  // lantern follows cursor (CSS vars, no re-render)
+  useEffect(() => {
+    const m = (e: PointerEvent) => { const el = appRef.current; if (!el) return; el.style.setProperty('--mx', e.clientX + 'px'); el.style.setProperty('--my', e.clientY + 'px'); el.style.setProperty('--px', ((e.clientX / innerWidth) - .5).toFixed(3)); el.style.setProperty('--py', ((e.clientY / innerHeight) - .5).toFixed(3)); };
+    addEventListener('pointermove', m); return () => removeEventListener('pointermove', m);
+  }, []);
+  // lightning + thunder
+  useEffect(() => {
+    if (paused) return;
+    let id = 0; const loop = () => { id = window.setTimeout(() => { setBolt(true); thunder(); later(() => setBolt(false), 450); loop(); }, 9000 + Math.random() * 12000); };
+    loop(); return () => clearTimeout(id);
+  }, [paused]);
+  // heartbeat under 30s, ambience during play
+  const hbZone = phase === 'play' && !paused ? (left <= 10 ? 150 : left <= 30 ? 100 : 0) : 0;
+  useEffect(() => { heartbeat(hbZone); return () => heartbeat(0); }, [hbZone]);
+  useEffect(() => { if (phase === 'play' && !paused && !muted) startAmbience(); else stopAmbience(); }, [phase, paused, muted]);
+  // room title card
+  useEffect(() => { if (phase !== 'play') return; setCard(true); const id = window.setTimeout(() => setCard(false), 1800); return () => clearTimeout(id); }, [room, phase]);
+  const fail = () => { setShake(true); later(() => setShake(false), 400); };
+  const togglePause = () => {
+    if (phase !== 'play') return;
+    setPaused(p => { if (!p) { pausedAt.current = performance.now(); } else { deadline.current += performance.now() - pausedAt.current; } return !p; });
+  };
+  // keyboard: Enter on title, Esc pause
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && phase === 'title') start();
+      if (e.key === 'Escape' && phase === 'play' && !panel) togglePause();
+    };
+    addEventListener('keydown', k); return () => removeEventListener('keydown', k);
+  });
+
   const reset = () => {
     timeouts.current.forEach(clearTimeout); timeouts.current = [];
     busy.current = false; warned.current = { sixty: false, thirty: false };
     setRoom(0); setLeft(TOTAL); setHints(0); setChatOpen(false); setMsg(''); setPanel(null); setThinking(false);
-    setDigits([0, 0, 0, 0]); setCabinetOpen(false); setLockShake(false); setSeq([]); setSmoke(false); setLabDoor(false); setFlash(false); setFade(false); setCopied(false);
+    setDigits([0, 0, 0, 0]); setCabinetOpen(false); setLockShake(false); setSeq([]); setSmoke(false); setLabDoor(false); setFlash(false); setFade(false); setCopied(false); setPaused(false); setDials([0, 0, 0]); setDomeOpen(false); setLit(null); setShowing(false); setRuneIn([]); setRunesOk(false); setRiddle('');
   };
   const start = () => { reset(); deadline.current = performance.now() + TOTAL * 1000; setPhase('play'); sfx('open'); say(pick(LINES.enter)); };
   const toTitle = () => { reset(); setPhase('title'); setLine(LINES.intro); };
@@ -99,7 +158,7 @@ export default function App() {
   const tryCode = () => {
     if (cabinetOpen || busy.current) return;
     if (digits.join('') === '1847') { setCabinetOpen(true); sfx('good'); say(pick(LINES.solved1), 'happy'); setPanel(null); }
-    else { sfx('bad'); setLockShake(true); later(() => setLockShake(false), 500); say(pick(LINES.wrongCode), 'happy'); }
+    else { sfx('bad'); setLockShake(true); fail(); later(() => setLockShake(false), 500); say(pick(LINES.wrongCode), 'happy'); }
   };
   // Room 2
   const drink = (p: Potion) => {
@@ -107,17 +166,43 @@ export default function App() {
     sfx('click'); const s = [...seq, p]; setSeq(s);
     if (s.length === 2) {
       if (s[0] === 'blue' && s[1] === 'red') { setLabDoor(true); sfx('good'); say(pick(LINES.solved2), 'happy'); }
-      else { setSmoke(true); sfx('boom'); say(pick(LINES.wrongPotion), 'happy'); later(() => { setSmoke(false); setSeq([]); }, 1300); }
+      else { setSmoke(true); sfx('boom'); fail(); say(pick(LINES.wrongPotion), 'happy'); later(() => { setSmoke(false); setSeq([]); }, 1300); }
     }
   };
   // Room 3
   const chooseDoor = (d: string) => {
     if (flash || busy.current) return;
-    if (d === 'silence') winGame();
-    else { setFlash(true); sfx('scream'); say(pick(LINES.wrongDoor), 'shock'); later(() => setFlash(false), 700); }
+    if (d === 'silence') { sfx('good'); say('The silent door… opens upward? Oh, this manor has MORE floors.', 'happy'); advance(3); }
+    else { setFlash(true); sfx('scream'); fail(); say(pick(LINES.wrongDoor), 'shock'); later(() => setFlash(false), 700); }
   };
 
-  const puzzleState = () => room === 0 ? (cabinetOpen ? 'cabinet open' : `lock shows ${digits.join('')}`) : room === 1 ? `selected: ${seq.join(',') || 'none'}` : 'choosing a door';
+  // Room 4
+  const alignStars = () => {
+    if (domeOpen || busy.current) return;
+    if (dials.every((d, i) => d === STAR_ANSWER[i])) { setDomeOpen(true); sfx('open'); say(pick(LINES.solved4), 'happy'); }
+    else { sfx('bad'); fail(); say(pick(LINES.wrongDials), 'happy'); }
+  };
+  // Room 5: candle memory show
+  const playShow = (penalty: boolean) => {
+    if (showing) return;
+    if (penalty) { deadline.current -= 10000; say('Encore? That costs ten seconds of your life. Paid.', 'happy'); }
+    setShowing(true); setRuneIn([]);
+    SEQ.forEach((r, i) => { later(() => { setLit(r); sfx('tick'); }, 600 + i * 750); later(() => setLit(null), 600 + i * 750 + 500); });
+    later(() => setShowing(false), 600 + SEQ.length * 750);
+  };
+  useEffect(() => { if (phase === 'play' && room === 4) { const id = window.setTimeout(() => playShow(false), 1900); return () => clearTimeout(id); } }, [room, phase]); // eslint-disable-line
+  const pressRune = (r: number) => {
+    if (showing || runesOk || busy.current) return;
+    const next = [...runeIn, r]; sfx('click'); setLit(r); later(() => setLit(null), 250);
+    if (SEQ[next.length - 1] !== r) { setRuneIn([]); sfx('bad'); fail(); say(pick(LINES.wrongRune), 'shock'); return; }
+    setRuneIn(next);
+    if (next.length === SEQ.length) { setRunesOk(true); sfx('good'); say(pick(LINES.runesOk), 'happy'); setPanel('riddle'); }
+  };
+  const answerRiddle = () => {
+    if (/foot ?steps?|^steps?$/.test(riddle.trim().toLowerCase())) { setPanel(null); winGame(); }
+    else { sfx('bad'); fail(); say(pick(LINES.wrongRiddle), 'happy'); }
+  };
+  const puzzleState = () => room === 0 ? (cabinetOpen ? 'cabinet open' : `lock shows ${digits.join('')}`) : room === 1 ? `selected: ${seq.join(',') || 'none'}` : room === 2 ? 'choosing a door' : room === 3 ? `dials ${dials.map(d => STAR_NAMES[d]).join('/')}` : `runes entered ${runeIn.length}/5${runesOk ? ', riddle pending' : ''}`;
   const ask = async (text: string) => {
     if (thinking || phase !== 'play') return;
     setThinking(true); setHints(h => h + 1); sfx('ghost');
@@ -134,8 +219,12 @@ export default function App() {
   const urgency = phase === 'play' ? (left <= 30 ? 'crit' : left <= 60 ? 'warn' : '') : '';
 
   return (
-    <div className={`app ${urgency} ${phase}`} data-testid="app">
+    <div ref={appRef} className={`app ${urgency} ${phase} ${shake ? 'shake-screen' : ''} ${crt ? 'crt' : ''}`} data-testid="app">
       <div className="fog f1" /><div className="fog f2" /><div className="vignette" />
+      {phase === 'play' && <div className="lantern" />}
+      <div className="grain" /><div className="scanlines" />
+      {bolt && <div className="lightning" data-testid="lightning" />}
+      {pickup && <div className="pickup">🗝️<b>BRASS KEY ACQUIRED</b></div>}
       {flash && <div className="jumpscare" data-testid="jumpscare"><Ghost mood="shock" /></div>}
 
       {phase === 'title' && (
@@ -150,23 +239,23 @@ export default function App() {
           <h1 className="logo">Escape From<br /><span>Grok Manor</span></h1>
           <div className="intro-ghost"><Ghost mood="talk" /><p className="bubble big">{LINES.intro}</p></div>
           <button className="enter" onClick={start} data-testid="enter">ENTER THE MANOR</button>
-          <p className="sub">3 rooms · 3 secrets · 180 seconds</p>
+          <p className="press">— PRESS ENTER —</p><p className="sub">5 rooms · 5 secrets · 300 seconds</p><div className="rain" />
         </section>
       )}
 
       {phase !== 'title' && (
         <div className="hud">
-          <div className="progress" data-testid="progress">{[0, 1, 2].map(i => <span key={i} className={i < room || phase === 'win' ? 'done' : i === room ? 'cur' : ''} />)}<b>Room {Math.min(room + 1, 3)}/3</b></div>
+          <div className="progress" data-testid="progress">{[0, 1, 2, 3, 4].map(i => <span key={i} className={i < room || phase === 'win' ? 'done' : i === room ? 'cur' : ''} />)}<b>Room {Math.min(room + 1, 5)}/5</b></div>
           <div className={`timer ${urgency}`} data-testid="timer">{fmt(left)}</div>
-          <div className="hud-r"><span className="hint-count">💡 {hints}</span><button onClick={toggleMute} data-testid="mute" aria-label="mute">{muted ? '🔇' : '🔊'}</button></div>
+          <div className="hud-r"><div className="inv" data-testid="inventory">{inventory.map((it, i) => <span key={i} className={`slot ${it ? 'full' : ''}`}>{it}</span>)}</div><span className="hint-count">💡 {hints}</span><button onClick={() => setCrt(c => !c)} title="CRT filter" data-testid="crt">📺</button><button onClick={togglePause} title="Pause (Esc)" data-testid="pause-btn">⏸</button><button onClick={toggleMute} data-testid="mute" aria-label="mute">{muted ? '🔇' : '🔊'}</button></div>
         </div>
       )}
 
       {phase === 'play' && (
         <main className={`stage ${fade ? 'fading' : ''}`}>
-          <h2 className="room-title" key={room}>{ROOMS[room]}</h2>
+          <div className="objective" data-testid="objective"><span>OBJECTIVE</span>{OBJECTIVES[room]}</div>
           <div className={`scene room${room}`} data-testid={`room${room + 1}`}>
-            <Cobweb /><Cobweb right />
+            <div className="parallax far" /><div className="parallax mid" /><Cobweb /><Cobweb right />
             {room === 0 && <>
               <div className="shelf"><div className="planks" />
                 {[1, 2, 3].map(n => <button key={n} className={`book b${n}`} data-testid={`book${n}`} onClick={() => { sfx('click'); setPanel(`book${n}`); }}><span>{['I', 'II', 'III'][n - 1]}</span></button>)}
@@ -178,7 +267,7 @@ export default function App() {
               <button className={`cabinet ${cabinetOpen ? 'open' : ''}`} data-testid="cabinet" onClick={() => { sfx('click'); if (!cabinetOpen) setPanel('lock'); }}>
                 <div className="cab-door l" /><div className="cab-door r" />{!cabinetOpen && <div className="padlock">🔒</div>}
               </button>
-              {cabinetOpen && <button className="key-item" data-testid="key" onClick={() => advance(1)}>🗝️<small>Take the key</small></button>}
+              {cabinetOpen && <button className="key-item" data-testid="key" onClick={() => { setPickup(true); sfx('good'); later(() => setPickup(false), 900); advance(1); }}>🗝️<small>Take the key</small></button>}
               <Candle x="8%" y="55%" /><Candle x="90%" y="55%" />
             </>}
             {room === 1 && <>
@@ -196,8 +285,29 @@ export default function App() {
                 <button key={id} className={`door d-${id}`} data-testid={`door-${id}`} onClick={() => chooseDoor(id)}><div className="arch"><span>{ico}</span></div><small>{label}</small></button>))}
               <Candle x="4%" y="60%" /><Candle x="93%" y="60%" />
             </>}
+            {room === 3 && <>
+              <div className="orrery"><div className="ring r1" /><div className="ring r2" /><div className="ring r3" /><div className="sun">☉</div></div>
+              <button className="telescope" data-testid="telescope" onClick={() => { sfx('click'); setPanel('telescope'); }}>🔭<small>Telescope note</small></button>
+              <button className="atlas" data-testid="atlas" onClick={() => { sfx('click'); setPanel('atlas'); }}>📘<small>Star atlas</small></button>
+              <div className="stardials">{dials.map((d, i) => (
+                <div key={i} className="stardial" style={{ transform: `rotate(${d * 60}deg)` }}><span style={{ transform: `rotate(${-d * 60}deg)` }} data-testid={`star${i}`} data-name={STAR_NAMES[d]}>{STARS[d]}</span></div>))}
+              </div>
+              <div className="dialbtns">{dials.map((_, i) => <button key={i} data-testid={`dial-up${i}`} onClick={() => { if (domeOpen) return; sfx('tick'); setDials(a => a.map((v, j) => j === i ? (v + 1) % 6 : v)); }}>⟳ {['I', 'II', 'III'][i]}</button>)}
+                <button className="align" data-testid="align" onClick={alignStars}>ALIGN</button></div>
+              <button className={`lab-door ${domeOpen ? 'unlocked' : ''}`} data-testid="dome-door" onClick={() => domeOpen ? advance(4) : say('The dome hatch is sealed until the heavens agree.')}>{domeOpen ? '🌌' : '🔒'}<small>{domeOpen ? 'Climb to the ritual' : 'Sealed hatch'}</small></button>
+            </>}
+            {room === 4 && <>
+              <div className="pentagram">⛤</div>
+              <div className="runes">{RUNES.map((r, i) => (
+                <button key={i} className={`rune ${lit === i ? 'lit' : ''}`} data-testid={`rune-${i}`} onClick={() => pressRune(i)} disabled={showing}>
+                  <div className="flame" /><span>{r}</span></button>))}</div>
+              <div className="ritual-status" data-testid="ritual-status">{showing ? 'WATCH THE CANDLES…' : runesOk ? 'THE RITUAL IS COMPLETE' : `REPEAT THE RITUAL · ${runeIn.length}/5`}</div>
+              {!runesOk && <button className="replay" data-testid="replay" onClick={() => playShow(true)} disabled={showing}>🔁 Replay (−10s)</button>}
+              {runesOk && <button className="lab-door unlocked" data-testid="altar" onClick={() => setPanel('riddle')}>📜<small>The final riddle</small></button>}
+            </>}
           </div>
 
+          {card && <div className="titlecard" data-testid="titlecard"><div className="bar t" /><div className="bar b" /><h2><small>ROOM {room + 1} OF 5</small>{ROOMS[room]}</h2></div>}
           {panel && (
             <div className="panel" data-testid="panel">
               <button className="close" onClick={() => setPanel(null)} aria-label="close">✕</button>
@@ -205,6 +315,11 @@ export default function App() {
               {panel === 'book2' && <p>📗 <i>“Look upon the master’s likeness. The year he was painted is the year he died.”</i></p>}
               {panel === 'book3' && <p>📘 <i>“Four numbers guard the cabinet. Read them beneath his gaze, left to right.”</i></p>}
               {panel === 'portrait' && <p>🖼️ A gilded plaque beneath the glaring portrait: <b className="date">LORD GROK · 1847</b>. His eyes follow you. Rude.</p>}
+              {panel === 'telescope' && <p>🔭 <i>“Set the first dial to what rules the night. Set the last to the ringed wanderer.”</i></p>}
+              {panel === 'atlas' && <p>📘 <i>“The middle dial: that of which the Hunter's belt is made.”</i><br /><small>☉ Sun · ☽ Moon · ★ Star · ♄ Saturn · ♃ Jupiter · ♀ Venus</small></p>}
+              {panel === 'riddle' && <div><p>📜 <i>“The more you take, the more you leave behind. What am I?”</i></p>
+                <form onSubmit={e => { e.preventDefault(); answerRiddle(); }}><input className="riddle-in" data-testid="riddle-input" value={riddle} onChange={e => setRiddle(e.target.value)} autoFocus placeholder="Speak your answer…" />
+                <button className="enter small" data-testid="riddle-submit">ANSWER</button></form></div>}
               {panel === 'recipe' && <p>📜 <i>“First, choose the color of the midnight sky. Then choose the color of a beating heart.”</i></p>}
               {panel === 'lock' && (
                 <div className={`lock ${lockShake ? 'shake' : ''}`}>
@@ -250,7 +365,7 @@ export default function App() {
 
       {phase === 'play' && (
         <aside className="companion" data-testid="ghost">
-          <p className="bubble" data-testid="ghost-line">{thinking ? '…the spirits are typing…' : line}</p>
+          <p className="bubble dialog" data-testid="ghost-line"><b className="speaker">GROKGEIST</b>{thinking ? '…the spirits are typing…' : <Typewriter text={line} />}</p>
           <button className={`ghost-btn ${mood}`} onClick={() => setChatOpen(o => !o)} aria-label="Talk to Grokgeist"><Ghost mood={mood} /></button>
           <div className="ghost-name">GROKGEIST</div>
           {chatOpen && (
@@ -262,11 +377,17 @@ export default function App() {
         </aside>
       )}
 
+      {paused && phase === 'play' && (
+        <div className="pause" data-testid="pause"><h1>PAUSED</h1><p className="bubble">“Taking a break? The dead don't get breaks.”</p>
+          <button className="enter" onClick={togglePause} data-testid="resume">RESUME</button>
+          <button className="enter ghosty" onClick={() => { setMute(m => { setMuted(!m); return !m; }); }}>{muted ? 'UNMUTE' : 'MUTE'}</button>
+          <button className="enter ghosty" onClick={() => setCrt(c => !c)}>CRT: {crt ? 'ON' : 'OFF'}</button>
+          <button className="enter ghosty" onClick={toTitle}>QUIT TO TITLE</button><p className="sub">Esc to resume</p></div>)}
       {DEV && (
         <div className="dev" data-testid="dev">
           <b>DEV</b>
           <button data-testid="dev-5s" onClick={() => { deadline.current = performance.now() + 5000; }}>⏱ 5s</button>
-          {[0, 1, 2].map(r => <button key={r} data-testid={`dev-room${r + 1}`} onClick={() => { if (phase !== 'play') start(); setRoom(r); setPanel(null); }}>R{r + 1}</button>)}
+          {[0, 1, 2, 3, 4].map(r => <button key={r} data-testid={`dev-room${r + 1}`} onClick={() => { if (phase !== 'play') start(); setRoom(r); setPanel(null); }}>R{r + 1}</button>)}
           <button data-testid="dev-win" onClick={() => { if (phase !== 'play') { deadline.current = performance.now() + TOTAL * 1000; } winGame(); }}>🏆 win</button>
         </div>
       )}
