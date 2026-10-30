@@ -1,0 +1,4 @@
+{"name":"escape-from-grok-manor","private":true,"version":"1.0.0","type":"module",
+"scripts":{"dev":"concurrently -k -n web,api \"vite --port 5173 --host\" \"node server/index.js\"","dev:web":"vite --port 5173","server":"node server/index.js","build":"tsc --noEmit && vite build","preview":"vite preview","test":"node tests/e2e.mjs"},
+"dependencies":{"express":"^4.21.2","react":"^18.3.1","react-dom":"^18.3.1"},
+"devDependencies":{"@types/react":"^18.3.12","@types/react-dom":"^18.3.1","@vitejs/plugin-react":"^4.3.4","concurrently":"^9.1.0","playwright":"^1.48.0","typescript":"^5.6.3","vite":"^5.4.11"}}
